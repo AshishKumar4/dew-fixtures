@@ -1,9 +1,10 @@
 # One of Dew's recorded fixtures put in this store as a release asset, from where its recording's host staged it
 # (Dew's tools/fetched_fixtures.py `stage`: the GPU outputs bucket, a presigned URL of an hour). Asked by
 # `dispatch` with the file's URL, its sha256 and its asset's name, so no byte of it passes through the machine that
-# asks: the file is fetched here, checked against its sha256, uploaded to the open release (`store-N`, the next one
-# opened once it holds 1000 assets) without overwriting any asset, and read back anonymously, as every fetch reads
-# it, before the run ends green. `dispatch` then pins the release GitHub holds the asset in at that sha256.
+# asks: the open release chosen here (`store-N`, the next one opened once it holds 1000 assets), and the file
+# fetched, checked against its sha256, uploaded without overwriting any asset and read back anonymously by the
+# store's one attach (.github/actions/attach, which Dew's JAX fork's plugin attach runs too), before the run ends
+# green. `dispatch` then pins the release GitHub holds the asset in at that sha256.
 name: upload
 
 on:
@@ -35,23 +36,22 @@ jobs:
     timeout-minutes: 30
     env:
       GH_TOKEN: ${{ github.token }}
-      URL: ${{ inputs.url }}
       SHA256: ${{ inputs.sha256 }}
       ASSET: ${{ inputs.asset }}
       PER_RELEASE: "1000"
     steps:
-      - name: Upload, then read back
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: The open release
+        id: open
         shell: bash
         run: |
           set -euo pipefail
-          echo "::add-mask::$URL"
           # The asset's name is the pin's content's: its sha256, then `.npz` or `-<a release file's name>`.
           [[ "$SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::no sha256: $SHA256"; exit 1; }
           [[ "$ASSET" =~ ^${SHA256}(\.npz|-[A-Za-z0-9._-]*[A-Za-z0-9_-])$ ]] || {
             echo "::error::$ASSET is not an asset named by $SHA256"; exit 1; }
-          file="$RUNNER_TEMP/$ASSET"
-          curl -fsSL --retry 3 -o "$file" "$URL"
-          echo "$SHA256  $file" | sha256sum -c --quiet || { echo "::error::the fetched file is not $SHA256"; exit 1; }
           releases=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases")
           # Held already, in a published release (a draft's assets no fetch reads): taken only at its sha256.
           held=$(jq -r --arg a "$ASSET" '[.[][] | select(.draft | not) | select(.tag_name | test("^store-[1-9][0-9]*$")) | . as $r
@@ -70,9 +70,14 @@ jobs:
               gh release create "$release" --repo "$GITHUB_REPOSITORY" --title "$release" --notes \
                 "Dew's recorded test fixtures (https://github.com/AshishKumar4/dew): each asset is named by its SHA-256, pinned beside the fixture it stands for in Dew's tests/fixtures/, and licensed as the reference it records, as its pin names."
             fi
-            gh release upload "$release" "$file" --repo "$GITHUB_REPOSITORY"
           fi
-          rm -f "$file"
-          curl -fsSL --retry 3 -o "$file" "https://github.com/$GITHUB_REPOSITORY/releases/download/$release/$ASSET"
-          echo "$SHA256  $file" | sha256sum -c --quiet || { echo "::error::$ASSET read back is not $SHA256"; exit 1; }
-          echo "$ASSET held at $release" >> "$GITHUB_STEP_SUMMARY"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+      - name: Upload, then read back
+        uses: ./.github/actions/attach
+        with:
+          url: ${{ inputs.url }}
+          sha256: ${{ inputs.sha256 }}
+          asset: ${{ inputs.asset }}
+          release: ${{ steps.open.outputs.release }}
+          repository: ${{ github.repository }}
+          token: ${{ github.token }}
