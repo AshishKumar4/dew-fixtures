@@ -1,0 +1,78 @@
+# One of Dew's recorded fixtures put in this store as a release asset, from where its recording's host staged it
+# (Dew's tools/fetched_fixtures.py `stage`: the GPU outputs bucket, a presigned URL of an hour). Asked by
+# `dispatch` with the file's URL, its sha256 and its asset's name, so no byte of it passes through the machine that
+# asks: the file is fetched here, checked against its sha256, uploaded to the open release (`store-N`, the next one
+# opened once it holds 1000 assets) without overwriting any asset, and read back anonymously, as every fetch reads
+# it, before the run ends green. `dispatch` then pins the release GitHub holds the asset in at that sha256.
+name: upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: the staged file's presigned URL
+        required: true
+      sha256:
+        description: the file's SHA-256, its pin's
+        required: true
+      asset:
+        description: the asset's name, the pin's path
+        required: true
+
+permissions:
+  contents: write
+
+# One upload at a time, so two never open the same next release or both take its last place; every one asked
+# waits its turn (queue: max), none cancelled by a later one.
+concurrency:
+  group: upload
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      URL: ${{ inputs.url }}
+      SHA256: ${{ inputs.sha256 }}
+      ASSET: ${{ inputs.asset }}
+      PER_RELEASE: "1000"
+    steps:
+      - name: Upload, then read back
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$URL"
+          # The asset's name is the pin's content's: its sha256, then `.npz` or `-<a release file's name>`.
+          [[ "$SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::no sha256: $SHA256"; exit 1; }
+          [[ "$ASSET" =~ ^${SHA256}(\.npz|-[A-Za-z0-9._-]*[A-Za-z0-9_-])$ ]] || {
+            echo "::error::$ASSET is not an asset named by $SHA256"; exit 1; }
+          file="$RUNNER_TEMP/$ASSET"
+          curl -fsSL --retry 3 -o "$file" "$URL"
+          echo "$SHA256  $file" | sha256sum -c --quiet || { echo "::error::the fetched file is not $SHA256"; exit 1; }
+          releases=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases")
+          # Held already, in a published release (a draft's assets no fetch reads): taken only at its sha256.
+          held=$(jq -r --arg a "$ASSET" '[.[][] | select(.draft | not) | select(.tag_name | test("^store-[1-9][0-9]*$")) | . as $r
+                 | .assets[] | select(.name == $a) | "\($r.tag_name) \(.digest)"] | first // ""' <<< "$releases")
+          if [ -n "$held" ]; then
+            [ "${held#* }" = "sha256:$SHA256" ] || { echo "::error::$ASSET is held at other bytes: $held"; exit 1; }
+            release=${held%% *}
+          else
+            release=$(jq -r --argjson n "$PER_RELEASE" '[.[][] | select(.draft | not) | select(.tag_name | test("^store-[1-9][0-9]*$"))
+                      | select((.assets | length) < $n) | .tag_name] | sort_by(ltrimstr("store-") | tonumber)
+                      | first // ""' <<< "$releases")
+            if [ -z "$release" ]; then
+              highest=$(jq -r '[.[][] | .tag_name | select(test("^store-[1-9][0-9]*$")) | ltrimstr("store-")
+                        | tonumber] | max // 0' <<< "$releases")
+              release="store-$((highest + 1))"
+              gh release create "$release" --repo "$GITHUB_REPOSITORY" --title "$release" --notes \
+                "Dew's recorded test fixtures (https://github.com/AshishKumar4/dew): each asset is named by its SHA-256, pinned beside the fixture it stands for in Dew's tests/fixtures/, and licensed as the reference it records, as its pin names."
+            fi
+            gh release upload "$release" "$file" --repo "$GITHUB_REPOSITORY"
+          fi
+          rm -f "$file"
+          curl -fsSL --retry 3 -o "$file" "https://github.com/$GITHUB_REPOSITORY/releases/download/$release/$ASSET"
+          echo "$SHA256  $file" | sha256sum -c --quiet || { echo "::error::$ASSET read back is not $SHA256"; exit 1; }
+          echo "$ASSET held at $release" >> "$GITHUB_STEP_SUMMARY"
