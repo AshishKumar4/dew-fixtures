@@ -40,6 +40,10 @@ jobs:
       ASSET: ${{ inputs.asset }}
       PER_RELEASE: "1000"
     steps:
+      # The URL masked before any step names it: the attach action's inputs are printed before its own steps run,
+      # its own mask among them. Read from the event's own file, never interpolated into this step.
+      - name: Mask the staged URL
+        run: jq -r '.inputs.url' "$GITHUB_EVENT_PATH" | while read -r url; do echo "::add-mask::$url"; done
       - uses: actions/checkout@v4
         with:
           persist-credentials: false

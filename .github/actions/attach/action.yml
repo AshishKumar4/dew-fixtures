@@ -2,7 +2,8 @@
 # no byte of it passes through the machine that asks: fetched here, checked against its sha256, uploaded without
 # overwriting an asset of another content, and read back anonymously as every reader reads it. Its callers: this
 # store's upload.yml (a recorded fixture, into the open store-N release) and Dew's JAX fork's attach-plugin.yml (a
-# build node's wheels, into plugin-VERSION), each choosing the release; the release exists, published.
+# build node's wheels, into plugin-VERSION), each choosing the release; the release exists, published. A caller masks
+# the URL before this action: the runner prints an action's inputs before its steps run, this one's mask among them.
 name: attach
 description: A staged file fetched, checked, attached to a release and read back
 
